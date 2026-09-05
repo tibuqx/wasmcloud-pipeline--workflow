@@ -473,7 +473,8 @@ jobs:
               sleep 5
             done
             if [ "$SUCCESS" -ne 1 ]; then
-              echo "WARNING: Health check at ${HEALTH_URL} did not succeed within timeout."
+              echo "ERROR: Integration service failed health check at ${HEALTH_URL} within timeout."
+              exit 1
             fi
             echo "url=${HEALTH_URL}" >> "${GITHUB_OUTPUT}"
           else
@@ -582,7 +583,8 @@ jobs:
               sleep 5
             done
             if [ "$SUCCESS" -ne 1 ]; then
-              echo "WARNING: Health check at ${HEALTH_URL} did not succeed within timeout."
+              echo "ERROR: Staging service failed health check at ${HEALTH_URL} within timeout."
+              exit 1
             fi
             echo "url=${HEALTH_URL}" >> "${GITHUB_OUTPUT}"
           else
