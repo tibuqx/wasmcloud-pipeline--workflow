@@ -359,16 +359,12 @@ jobs:
             wash push "${DEST}" "${wasm}" \
               --user "${OCI_USER}" \
               --password "${OCI_PASSWORD}" \
-              --allow-latest || {
-                echo "Warning: wash push exited with status $? for ${DEST}."
-                if [ "${{ github.event_name }}" != "pull_request" ]; then
-                  exit 1
-                fi
-              }
+              --allow-latest
           done
 
           if [ "$FOUND" -eq 0 ]; then
-            echo "WARNING: No .wasm binaries found in target/${TARGET}/release/ to push."
+            echo "ERROR: No .wasm binaries found in target/${TARGET}/release/ to push."
+            exit 1
           fi
 
   # =========================================================================
@@ -429,32 +425,33 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.integration-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST || '127.0.0.1' }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT || '4222' }}
-          WASH_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
+          set -euo pipefail
           if [ ! -f "${MANIFEST}" ]; then
-            echo "Notice: Manifest ${MANIFEST} not found; skipping lattice deployment."
-            exit 0
+            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            exit 1
           fi
 
           echo "Deploying application to wasmCloud lattice '${LATTICE}' via WADM..."
           ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
 
-          if [ -n "${WASH_CTL_CREDS}" ]; then
-            echo "${WASH_CTL_CREDS}" > /tmp/nats.creds
+          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
+            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST}" ]; then
+          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
             ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT}" ]; then
+          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
             ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
           fi
 
-          wash "${ARGS[@]}" || echo "Lattice deployment completed (or local host simulated)."
+          wash "${ARGS[@]}"
 
       - name: Integration Availability Smoke Test
         id: smoke
@@ -539,32 +536,33 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.staging-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST || '127.0.0.1' }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT || '4222' }}
-          WASH_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
+          set -euo pipefail
           if [ ! -f "${MANIFEST}" ]; then
-            echo "Notice: Manifest ${MANIFEST} not found; skipping lattice deployment."
-            exit 0
+            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            exit 1
           fi
 
           echo "Deploying application to wasmCloud lattice '${LATTICE}' via WADM..."
           ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
 
-          if [ -n "${WASH_CTL_CREDS}" ]; then
-            echo "${WASH_CTL_CREDS}" > /tmp/nats.creds
+          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
+            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST}" ]; then
+          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
             ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT}" ]; then
+          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
             ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
           fi
 
-          wash "${ARGS[@]}" || echo "Staging lattice deployment completed."
+          wash "${ARGS[@]}"
 
       - name: Staging Availability Smoke Test
         id: smoke
@@ -650,32 +648,33 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.production-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST || '127.0.0.1' }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT || '4222' }}
-          WASH_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
+          set -euo pipefail
           if [ ! -f "${MANIFEST}" ]; then
-            echo "Notice: Manifest ${MANIFEST} not found; skipping lattice deployment."
-            exit 0
+            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            exit 1
           fi
 
           echo "Deploying application to production wasmCloud lattice '${LATTICE}' via WADM..."
           ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
 
-          if [ -n "${WASH_CTL_CREDS}" ]; then
-            echo "${WASH_CTL_CREDS}" > /tmp/nats.creds
+          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
+            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST}" ]; then
+          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
             ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT}" ]; then
+          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
             ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
           fi
 
-          wash "${ARGS[@]}" || echo "Production lattice deployment completed."
+          wash "${ARGS[@]}"
 
       - name: Production Availability Smoke Test
         id: smoke
