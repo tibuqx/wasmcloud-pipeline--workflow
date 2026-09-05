@@ -100,17 +100,57 @@ on:
         description: "wasmCloud lattice name for integration environment"
         required: false
         type: string
-        default: "integration"
+        default: "default"
       staging-lattice:
         description: "wasmCloud lattice name for staging environment"
         required: false
         type: string
-        default: "staging"
+        default: "default"
       production-lattice:
         description: "wasmCloud lattice name for production environment"
         required: false
         type: string
-        default: "production"
+        default: "default"
+      aws-role-arn:
+        description: "AWS IAM Role ARN to assume via GitHub OIDC for remote ECS deployment"
+        required: false
+        type: string
+        default: "arn:aws:iam::461415799326:role/github-actions-wasmcloud-prod"
+      aws-region:
+        description: "AWS region hosting wasmCloud ECS cluster"
+        required: false
+        type: string
+        default: "eu-west-1"
+      ecs-cluster:
+        description: "AWS ECS cluster name hosting wasmCloud lattice"
+        required: false
+        type: string
+        default: "wasmcloud-ecs-cluster"
+      ecs-task-definition:
+        description: "AWS ECS task definition family for ephemeral WADM deployer"
+        required: false
+        type: string
+        default: "wasmcloud-wadm-deployer"
+      ecs-subnets:
+        description: "Comma-separated private VPC subnets for ephemeral ECS task"
+        required: false
+        type: string
+        default: "subnet-0d451def791048e52,subnet-0a015b66206661bf7"
+      ecs-security-groups:
+        description: "Comma-separated security groups for ephemeral ECS task"
+        required: false
+        type: string
+        default: "sg-07b7ae6447421b2b7"
+      nats-host:
+        description: "Private NATS control plane hostname within the VPC"
+        required: false
+        type: string
+        default: "nats.wasmcloud.local"
+      nats-port:
+        description: "Private NATS control plane port"
+        required: false
+        type: string
+        default: "4222"
       health-check-endpoint:
         description: "Default health check endpoint URL for deployed application"
         required: false
@@ -383,6 +423,7 @@ jobs:
       group: integration-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     permissions:
+      id-token: write
       contents: read
       packages: read
     outputs:
@@ -390,6 +431,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
 
       - name: Install wash CLI
         run: |
@@ -421,37 +469,130 @@ jobs:
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
 
-      - name: Deploy to Integration wasmCloud Lattice
+      - name: Validate WADM Application Manifest
+        run: |
+          if [ -f "${{ inputs.wadm-manifest-path }}" ]; then
+            echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
+            wash app validate "${{ inputs.wadm-manifest-path }}"
+          fi
+
+      - name: Deploy to Integration wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.integration-lattice }}
+          CLUSTER: ${{ inputs.ecs-cluster }}
+          TASK_DEF: ${{ inputs.ecs-task-definition }}
+          SUBNETS: ${{ inputs.ecs-subnets }}
+          SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
-          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          INPUT_NATS_HOST: ${{ inputs.nats-host }}
+          INPUT_NATS_PORT: ${{ inputs.nats-port }}
+          AWS_REGION: ${{ inputs.aws-region }}
         run: |
           set -euo pipefail
+
           if [ ! -f "${MANIFEST}" ]; then
-            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            echo "ERROR: Manifest file '${MANIFEST}' not found. Cannot deploy to lattice."
             exit 1
           fi
 
-          echo "Deploying application to wasmCloud lattice '${LATTICE}' via WADM..."
-          ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
+          CTL_HOST="${INPUT_CTL_HOST:-${INPUT_NATS_HOST:-nats.wasmcloud.local}}"
+          CTL_PORT="${INPUT_CTL_PORT:-${INPUT_NATS_PORT:-4222}}"
+          TARGET_LATTICE="${LATTICE:-default}"
 
-          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
-            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
-            ARGS+=(--ctl-credsfile /tmp/nats.creds)
+          echo "=== wasmCloud Remote in-VPC Deployment ==="
+          echo "Target Manifest: ${MANIFEST}"
+          echo "Target Lattice:  ${TARGET_LATTICE}"
+          echo "NATS Control:    ${CTL_HOST}:${CTL_PORT}"
+          echo "ECS Cluster:     ${CLUSTER}"
+          echo "Task Definition: ${TASK_DEF}"
+          echo "Subnets:         ${SUBNETS}"
+          echo "Security Groups: ${SECURITY_GROUPS}"
+
+          # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
+          MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
+
+          # Dynamically determine the container name from the task definition
+          CONTAINER_NAME=$(aws ecs describe-task-definition \
+            --task-definition "${TASK_DEF}" \
+            --region "${AWS_REGION}" \
+            --query "taskDefinition.containerDefinitions[0].name" \
+            --output text)
+
+          if [ -z "${CONTAINER_NAME}" ] || [ "${CONTAINER_NAME}" = "None" ]; then
+            echo "ERROR: Could not resolve container name from task definition '${TASK_DEF}'."
+            exit 1
+          fi
+          echo "Target Container Name: ${CONTAINER_NAME}"
+
+          # Build container overrides JSON
+          CONTAINER_SCRIPT="set -euo pipefail; echo '=== In-VPC Ephemeral Deployer Started ==='; echo 'Decoding and decompressing manifest...'; echo \"\$MANIFEST_GZ_B64\" | base64 -d | gunzip > /tmp/wadm.yaml; echo 'Verifying wash CLI availability...'; if ! command -v wash >/dev/null 2>&1; then echo 'Installing curl, ca-certificates, and wash binary...'; apk add --no-cache curl ca-certificates >/dev/null 2>&1 || true; curl -fsSL 'https://github.com/wasmCloud/wasmCloud/releases/download/wash-v0.43.0/wash-aarch64-unknown-linux-musl' -o /usr/local/bin/wash; chmod +x /usr/local/bin/wash; fi; echo 'Executing wash app deploy...'; wash app deploy /tmp/wadm.yaml --ctl-host \"${CTL_HOST}\" --ctl-port \"${CTL_PORT}\" --lattice \"${TARGET_LATTICE}\" --replace; echo '=== WADM Application Deployment Successfully Executed ==='"
+
+          OVERRIDES_FILE=$(mktemp)
+          python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
+
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+
+          echo "Launching ephemeral ECS Fargate deployment task..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${CLUSTER}" \
+            --task-definition "${TASK_DEF}" \
+            --launch-type FARGATE \
+            --network-configuration "${NET_CONFIG}" \
+            --overrides "file://${OVERRIDES_FILE}" \
+            --region "${AWS_REGION}" \
+            --query "tasks[0].taskArn" \
+            --output text)
+
+          rm -f "${OVERRIDES_FILE}"
+
+          if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+            echo "ERROR: Failed to launch ephemeral ECS deployment task. No task ARN returned."
+            exit 1
           fi
 
-          if [ -n "${INPUT_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
+          echo "Launched ephemeral ECS task: ${TASK_ARN}"
+          TASK_ID=$(echo "${TASK_ARN}" | awk -F'/' '{print $NF}')
+
+          echo "Waiting for ephemeral deployment task (${TASK_ID}) to stop..."
+          aws ecs wait tasks-stopped \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}"
+
+          echo "Task stopped. Inspecting task completion status..."
+          DESC=$(aws ecs describe-tasks \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}")
+
+          EXIT_CODE=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].exitCode')
+          STOP_REASON=$(echo "${DESC}" | jq -r '.tasks[0].stoppedReason // empty')
+          CONTAINER_REASON=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].reason // empty')
+
+          echo "Task stopped reason: ${STOP_REASON:-None}"
+          echo "Container exit code: ${EXIT_CODE}"
+          if [ -n "${CONTAINER_REASON}" ]; then
+            echo "Container reason: ${CONTAINER_REASON}"
           fi
 
-          if [ -n "${INPUT_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
+          # Fail closed if exit code is non-zero or empty
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "ERROR: Ephemeral deployment container exited with non-zero code: ${EXIT_CODE}"
+            echo "=== Fetching CloudWatch logs for task ${TASK_ID} ==="
+            LOG_GROUP="/ecs/cloudflared"
+            LOG_STREAM="deployer/${CONTAINER_NAME}/${TASK_ID}"
+            aws logs get-log-events \
+              --log-group-name "${LOG_GROUP}" \
+              --log-stream-name "${LOG_STREAM}" \
+              --region "${AWS_REGION}" \
+              --query "events[*].message" \
+              --output text || echo "Warning: Could not retrieve CloudWatch logs for ${LOG_STREAM}"
+            exit 1
           fi
 
-          wash "${ARGS[@]}"
+          echo "Ephemeral ECS deployment task completed successfully (exit code 0)."
 
       - name: Integration Availability Smoke Test
         id: smoke
@@ -494,6 +635,7 @@ jobs:
       group: deploy-staging-main
       cancel-in-progress: false
     permissions:
+      id-token: write
       contents: read
       packages: read
     outputs:
@@ -501,6 +643,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
 
       - name: Install wash CLI
         run: |
@@ -532,37 +681,130 @@ jobs:
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
 
-      - name: Deploy to Staging wasmCloud Lattice
+      - name: Validate WADM Application Manifest
+        run: |
+          if [ -f "${{ inputs.wadm-manifest-path }}" ]; then
+            echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
+            wash app validate "${{ inputs.wadm-manifest-path }}"
+          fi
+
+      - name: Deploy to Staging wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.staging-lattice }}
+          CLUSTER: ${{ inputs.ecs-cluster }}
+          TASK_DEF: ${{ inputs.ecs-task-definition }}
+          SUBNETS: ${{ inputs.ecs-subnets }}
+          SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
-          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          INPUT_NATS_HOST: ${{ inputs.nats-host }}
+          INPUT_NATS_PORT: ${{ inputs.nats-port }}
+          AWS_REGION: ${{ inputs.aws-region }}
         run: |
           set -euo pipefail
+
           if [ ! -f "${MANIFEST}" ]; then
-            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            echo "ERROR: Manifest file '${MANIFEST}' not found. Cannot deploy to lattice."
             exit 1
           fi
 
-          echo "Deploying application to wasmCloud lattice '${LATTICE}' via WADM..."
-          ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
+          CTL_HOST="${INPUT_CTL_HOST:-${INPUT_NATS_HOST:-nats.wasmcloud.local}}"
+          CTL_PORT="${INPUT_CTL_PORT:-${INPUT_NATS_PORT:-4222}}"
+          TARGET_LATTICE="${LATTICE:-default}"
 
-          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
-            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
-            ARGS+=(--ctl-credsfile /tmp/nats.creds)
+          echo "=== wasmCloud Remote in-VPC Deployment ==="
+          echo "Target Manifest: ${MANIFEST}"
+          echo "Target Lattice:  ${TARGET_LATTICE}"
+          echo "NATS Control:    ${CTL_HOST}:${CTL_PORT}"
+          echo "ECS Cluster:     ${CLUSTER}"
+          echo "Task Definition: ${TASK_DEF}"
+          echo "Subnets:         ${SUBNETS}"
+          echo "Security Groups: ${SECURITY_GROUPS}"
+
+          # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
+          MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
+
+          # Dynamically determine the container name from the task definition
+          CONTAINER_NAME=$(aws ecs describe-task-definition \
+            --task-definition "${TASK_DEF}" \
+            --region "${AWS_REGION}" \
+            --query "taskDefinition.containerDefinitions[0].name" \
+            --output text)
+
+          if [ -z "${CONTAINER_NAME}" ] || [ "${CONTAINER_NAME}" = "None" ]; then
+            echo "ERROR: Could not resolve container name from task definition '${TASK_DEF}'."
+            exit 1
+          fi
+          echo "Target Container Name: ${CONTAINER_NAME}"
+
+          # Build container overrides JSON
+          CONTAINER_SCRIPT="set -euo pipefail; echo '=== In-VPC Ephemeral Deployer Started ==='; echo 'Decoding and decompressing manifest...'; echo \"\$MANIFEST_GZ_B64\" | base64 -d | gunzip > /tmp/wadm.yaml; echo 'Verifying wash CLI availability...'; if ! command -v wash >/dev/null 2>&1; then echo 'Installing curl, ca-certificates, and wash binary...'; apk add --no-cache curl ca-certificates >/dev/null 2>&1 || true; curl -fsSL 'https://github.com/wasmCloud/wasmCloud/releases/download/wash-v0.43.0/wash-aarch64-unknown-linux-musl' -o /usr/local/bin/wash; chmod +x /usr/local/bin/wash; fi; echo 'Executing wash app deploy...'; wash app deploy /tmp/wadm.yaml --ctl-host \"${CTL_HOST}\" --ctl-port \"${CTL_PORT}\" --lattice \"${TARGET_LATTICE}\" --replace; echo '=== WADM Application Deployment Successfully Executed ==='"
+
+          OVERRIDES_FILE=$(mktemp)
+          python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
+
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+
+          echo "Launching ephemeral ECS Fargate deployment task..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${CLUSTER}" \
+            --task-definition "${TASK_DEF}" \
+            --launch-type FARGATE \
+            --network-configuration "${NET_CONFIG}" \
+            --overrides "file://${OVERRIDES_FILE}" \
+            --region "${AWS_REGION}" \
+            --query "tasks[0].taskArn" \
+            --output text)
+
+          rm -f "${OVERRIDES_FILE}"
+
+          if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+            echo "ERROR: Failed to launch ephemeral ECS deployment task. No task ARN returned."
+            exit 1
           fi
 
-          if [ -n "${INPUT_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
+          echo "Launched ephemeral ECS task: ${TASK_ARN}"
+          TASK_ID=$(echo "${TASK_ARN}" | awk -F'/' '{print $NF}')
+
+          echo "Waiting for ephemeral deployment task (${TASK_ID}) to stop..."
+          aws ecs wait tasks-stopped \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}"
+
+          echo "Task stopped. Inspecting task completion status..."
+          DESC=$(aws ecs describe-tasks \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}")
+
+          EXIT_CODE=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].exitCode')
+          STOP_REASON=$(echo "${DESC}" | jq -r '.tasks[0].stoppedReason // empty')
+          CONTAINER_REASON=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].reason // empty')
+
+          echo "Task stopped reason: ${STOP_REASON:-None}"
+          echo "Container exit code: ${EXIT_CODE}"
+          if [ -n "${CONTAINER_REASON}" ]; then
+            echo "Container reason: ${CONTAINER_REASON}"
           fi
 
-          if [ -n "${INPUT_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
+          # Fail closed if exit code is non-zero or empty
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "ERROR: Ephemeral deployment container exited with non-zero code: ${EXIT_CODE}"
+            echo "=== Fetching CloudWatch logs for task ${TASK_ID} ==="
+            LOG_GROUP="/ecs/cloudflared"
+            LOG_STREAM="deployer/${CONTAINER_NAME}/${TASK_ID}"
+            aws logs get-log-events \
+              --log-group-name "${LOG_GROUP}" \
+              --log-stream-name "${LOG_STREAM}" \
+              --region "${AWS_REGION}" \
+              --query "events[*].message" \
+              --output text || echo "Warning: Could not retrieve CloudWatch logs for ${LOG_STREAM}"
+            exit 1
           fi
 
-          wash "${ARGS[@]}"
+          echo "Ephemeral ECS deployment task completed successfully (exit code 0)."
 
       - name: Staging Availability Smoke Test
         id: smoke
@@ -606,6 +848,7 @@ jobs:
       group: deploy-production-main
       cancel-in-progress: false
     permissions:
+      id-token: write
       contents: read
       packages: read
     outputs:
@@ -613,6 +856,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
 
       - name: Install wash CLI
         run: |
@@ -644,37 +894,130 @@ jobs:
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
 
-      - name: Deploy to Production wasmCloud Lattice
+      - name: Validate WADM Application Manifest
+        run: |
+          if [ -f "${{ inputs.wadm-manifest-path }}" ]; then
+            echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
+            wash app validate "${{ inputs.wadm-manifest-path }}"
+          fi
+
+      - name: Deploy to Production wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.production-lattice }}
+          CLUSTER: ${{ inputs.ecs-cluster }}
+          TASK_DEF: ${{ inputs.ecs-task-definition }}
+          SUBNETS: ${{ inputs.ecs-subnets }}
+          SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
-          INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
+          INPUT_NATS_HOST: ${{ inputs.nats-host }}
+          INPUT_NATS_PORT: ${{ inputs.nats-port }}
+          AWS_REGION: ${{ inputs.aws-region }}
         run: |
           set -euo pipefail
+
           if [ ! -f "${MANIFEST}" ]; then
-            echo "ERROR: Manifest ${MANIFEST} not found. Cannot deploy to lattice."
+            echo "ERROR: Manifest file '${MANIFEST}' not found. Cannot deploy to lattice."
             exit 1
           fi
 
-          echo "Deploying application to production wasmCloud lattice '${LATTICE}' via WADM..."
-          ARGS=(app deploy "${MANIFEST}" --lattice "${LATTICE}" --replace)
+          CTL_HOST="${INPUT_CTL_HOST:-${INPUT_NATS_HOST:-nats.wasmcloud.local}}"
+          CTL_PORT="${INPUT_CTL_PORT:-${INPUT_NATS_PORT:-4222}}"
+          TARGET_LATTICE="${LATTICE:-default}"
 
-          if [ -n "${INPUT_CTL_CREDS:-}" ]; then
-            echo "${INPUT_CTL_CREDS}" > /tmp/nats.creds
-            ARGS+=(--ctl-credsfile /tmp/nats.creds)
+          echo "=== wasmCloud Remote in-VPC Deployment ==="
+          echo "Target Manifest: ${MANIFEST}"
+          echo "Target Lattice:  ${TARGET_LATTICE}"
+          echo "NATS Control:    ${CTL_HOST}:${CTL_PORT}"
+          echo "ECS Cluster:     ${CLUSTER}"
+          echo "Task Definition: ${TASK_DEF}"
+          echo "Subnets:         ${SUBNETS}"
+          echo "Security Groups: ${SECURITY_GROUPS}"
+
+          # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
+          MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
+
+          # Dynamically determine the container name from the task definition
+          CONTAINER_NAME=$(aws ecs describe-task-definition \
+            --task-definition "${TASK_DEF}" \
+            --region "${AWS_REGION}" \
+            --query "taskDefinition.containerDefinitions[0].name" \
+            --output text)
+
+          if [ -z "${CONTAINER_NAME}" ] || [ "${CONTAINER_NAME}" = "None" ]; then
+            echo "ERROR: Could not resolve container name from task definition '${TASK_DEF}'."
+            exit 1
+          fi
+          echo "Target Container Name: ${CONTAINER_NAME}"
+
+          # Build container overrides JSON
+          CONTAINER_SCRIPT="set -euo pipefail; echo '=== In-VPC Ephemeral Deployer Started ==='; echo 'Decoding and decompressing manifest...'; echo \"\$MANIFEST_GZ_B64\" | base64 -d | gunzip > /tmp/wadm.yaml; echo 'Verifying wash CLI availability...'; if ! command -v wash >/dev/null 2>&1; then echo 'Installing curl, ca-certificates, and wash binary...'; apk add --no-cache curl ca-certificates >/dev/null 2>&1 || true; curl -fsSL 'https://github.com/wasmCloud/wasmCloud/releases/download/wash-v0.43.0/wash-aarch64-unknown-linux-musl' -o /usr/local/bin/wash; chmod +x /usr/local/bin/wash; fi; echo 'Executing wash app deploy...'; wash app deploy /tmp/wadm.yaml --ctl-host \"${CTL_HOST}\" --ctl-port \"${CTL_PORT}\" --lattice \"${TARGET_LATTICE}\" --replace; echo '=== WADM Application Deployment Successfully Executed ==='"
+
+          OVERRIDES_FILE=$(mktemp)
+          python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
+
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+
+          echo "Launching ephemeral ECS Fargate deployment task..."
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${CLUSTER}" \
+            --task-definition "${TASK_DEF}" \
+            --launch-type FARGATE \
+            --network-configuration "${NET_CONFIG}" \
+            --overrides "file://${OVERRIDES_FILE}" \
+            --region "${AWS_REGION}" \
+            --query "tasks[0].taskArn" \
+            --output text)
+
+          rm -f "${OVERRIDES_FILE}"
+
+          if [ -z "${TASK_ARN}" ] || [ "${TASK_ARN}" = "None" ]; then
+            echo "ERROR: Failed to launch ephemeral ECS deployment task. No task ARN returned."
+            exit 1
           fi
 
-          if [ -n "${INPUT_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
+          echo "Launched ephemeral ECS task: ${TASK_ARN}"
+          TASK_ID=$(echo "${TASK_ARN}" | awk -F'/' '{print $NF}')
+
+          echo "Waiting for ephemeral deployment task (${TASK_ID}) to stop..."
+          aws ecs wait tasks-stopped \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}"
+
+          echo "Task stopped. Inspecting task completion status..."
+          DESC=$(aws ecs describe-tasks \
+            --cluster "${CLUSTER}" \
+            --tasks "${TASK_ARN}" \
+            --region "${AWS_REGION}")
+
+          EXIT_CODE=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].exitCode')
+          STOP_REASON=$(echo "${DESC}" | jq -r '.tasks[0].stoppedReason // empty')
+          CONTAINER_REASON=$(echo "${DESC}" | jq -r '.tasks[0].containers[0].reason // empty')
+
+          echo "Task stopped reason: ${STOP_REASON:-None}"
+          echo "Container exit code: ${EXIT_CODE}"
+          if [ -n "${CONTAINER_REASON}" ]; then
+            echo "Container reason: ${CONTAINER_REASON}"
           fi
 
-          if [ -n "${INPUT_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
+          # Fail closed if exit code is non-zero or empty
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "ERROR: Ephemeral deployment container exited with non-zero code: ${EXIT_CODE}"
+            echo "=== Fetching CloudWatch logs for task ${TASK_ID} ==="
+            LOG_GROUP="/ecs/cloudflared"
+            LOG_STREAM="deployer/${CONTAINER_NAME}/${TASK_ID}"
+            aws logs get-log-events \
+              --log-group-name "${LOG_GROUP}" \
+              --log-stream-name "${LOG_STREAM}" \
+              --region "${AWS_REGION}" \
+              --query "events[*].message" \
+              --output text || echo "Warning: Could not retrieve CloudWatch logs for ${LOG_STREAM}"
+            exit 1
           fi
 
-          wash "${ARGS[@]}"
+          echo "Ephemeral ECS deployment task completed successfully (exit code 0)."
 
       - name: Production Availability Smoke Test
         id: smoke
