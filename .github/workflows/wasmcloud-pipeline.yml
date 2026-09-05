@@ -425,8 +425,8 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.integration-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
           set -euo pipefail
@@ -443,12 +443,12 @@ jobs:
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
+          if [ -n "${INPUT_CTL_HOST:-}" ]; then
+            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
+          if [ -n "${INPUT_CTL_PORT:-}" ]; then
+            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
           fi
 
           wash "${ARGS[@]}"
@@ -536,8 +536,8 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.staging-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
           set -euo pipefail
@@ -554,12 +554,12 @@ jobs:
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
+          if [ -n "${INPUT_CTL_HOST:-}" ]; then
+            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
+          if [ -n "${INPUT_CTL_PORT:-}" ]; then
+            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
           fi
 
           wash "${ARGS[@]}"
@@ -648,8 +648,8 @@ jobs:
         env:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           LATTICE: ${{ inputs.production-lattice }}
-          WASMCLOUD_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
-          WASMCLOUD_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
+          INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
+          INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_CTL_CREDS: ${{ secrets.WASH_CTL_CREDS }}
         run: |
           set -euo pipefail
@@ -666,12 +666,12 @@ jobs:
             ARGS+=(--ctl-credsfile /tmp/nats.creds)
           fi
 
-          if [ -n "${WASMCLOUD_CTL_HOST:-}" ]; then
-            ARGS+=(--ctl-host "${WASMCLOUD_CTL_HOST}")
+          if [ -n "${INPUT_CTL_HOST:-}" ]; then
+            ARGS+=(--ctl-host "${INPUT_CTL_HOST}")
           fi
 
-          if [ -n "${WASMCLOUD_CTL_PORT:-}" ]; then
-            ARGS+=(--ctl-port "${WASMCLOUD_CTL_PORT}")
+          if [ -n "${INPUT_CTL_PORT:-}" ]; then
+            ARGS+=(--ctl-port "${INPUT_CTL_PORT}")
           fi
 
           wash "${ARGS[@]}"
