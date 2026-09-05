@@ -1,0 +1,27 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: wasmcloud-pipeline--workflow
+  title: wasmCloud CI/CD Promotion Reusable Pipeline
+  description: Reusable GitHub Actions CI/CD workflow orchestrating ADR-0046 compliant 3-stage environment promotion (integration, staging, production) for wasmCloud applications and components.
+  annotations:
+    github.com/project-slug: tibuqx/wasmcloud-pipeline--workflow
+    tibuqx.com/approved-workflow: "tibuqx/wasmcloud-pipeline--workflow"
+    tibuqx.com/architecture: "reusable-ci-cd-workflow"
+    backstage.io/techdocs-ref: dir:.
+  tags:
+    - workflow
+    - github-actions
+    - ci-cd
+    - wasmcloud
+    - wadm
+    - rust
+    - webassembly
+    - reusable-workflow
+    - adr-0046
+    - environment-promotion
+spec:
+  type: workflow
+  lifecycle: production
+  owner: group:default/architecture
+  system: ci-cd-pipelines
