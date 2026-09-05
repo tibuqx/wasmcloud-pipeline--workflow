@@ -41,6 +41,11 @@ on:
         required: false
         type: string
         default: ""
+      database-service-name:
+        description: 'Name of the database service in docker-compose to monitor for readiness'
+        required: false
+        type: string
+        default: 'postgrest'
       database-network:
         description: "Docker network name for test database container bridge"
         required: false
@@ -216,6 +221,7 @@ jobs:
         if: inputs.database-compose-file != '' && hashFiles(inputs.database-compose-file) != ''
         env:
           DB_COMPOSE: ${{ inputs.database-compose-file }}
+          DB_SERVICE: ${{ inputs.database-service-name }}
           DB_NETWORK: ${{ inputs.database-network }}
           HEALTH_URL: ${{ inputs.database-health-url }}
           CUSTOM_CMD: ${{ inputs.integration-test-command }}
@@ -223,7 +229,7 @@ jobs:
           echo "Creating docker network ${DB_NETWORK}..."
           docker network create "${DB_NETWORK}" || true
 
-          echo "Starting test database infrastructure with compose file ${DB_COMPOSE}..."
+          echo "Starting test database infrastructure with compose file ${DB_COMPOSE} (${DB_SERVICE})..."
           docker compose -f "${DB_COMPOSE}" up -d
 
           echo "Polling database readiness at ${HEALTH_URL}..."
