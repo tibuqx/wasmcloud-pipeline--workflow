@@ -315,8 +315,13 @@ jobs:
       - name: Install wash CLI
         run: |
           echo "Installing wasmCloud wash CLI..."
-          curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash
-          sudo apt-get install -y wash
+          if ! command -v wash &> /dev/null; then
+            sudo curl -fsSL https://github.com/wasmCloud/wash/releases/latest/download/wash-x86_64-unknown-linux-musl -o /usr/local/bin/wash && sudo chmod +x /usr/local/bin/wash || {
+              echo "Fallback: installing via packagecloud..."
+              curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash || true
+              sudo apt-get install -y wash || true
+            }
+          fi
           wash --version
 
       - name: Log in to OCI Registry
@@ -380,8 +385,14 @@ jobs:
       - name: Install wash CLI
         run: |
           echo "Installing wasmCloud wash CLI..."
-          curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash
-          sudo apt-get install -y wash
+          if ! command -v wash &> /dev/null; then
+            sudo curl -fsSL https://github.com/wasmCloud/wash/releases/latest/download/wash-x86_64-unknown-linux-musl -o /usr/local/bin/wash && sudo chmod +x /usr/local/bin/wash || {
+              echo "Fallback: installing via packagecloud..."
+              curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash || true
+              sudo apt-get install -y wash || true
+            }
+          fi
+          wash --version
 
       - name: Interpolate WADM Application Manifest
         env:
@@ -480,8 +491,14 @@ jobs:
       - name: Install wash CLI
         run: |
           echo "Installing wasmCloud wash CLI..."
-          curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash
-          sudo apt-get install -y wash
+          if ! command -v wash &> /dev/null; then
+            sudo curl -fsSL https://github.com/wasmCloud/wash/releases/latest/download/wash-x86_64-unknown-linux-musl -o /usr/local/bin/wash && sudo chmod +x /usr/local/bin/wash || {
+              echo "Fallback: installing via packagecloud..."
+              curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash || true
+              sudo apt-get install -y wash || true
+            }
+          fi
+          wash --version
 
       - name: Interpolate WADM Application Manifest
         env:
@@ -581,8 +598,14 @@ jobs:
       - name: Install wash CLI
         run: |
           echo "Installing wasmCloud wash CLI..."
-          curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash
-          sudo apt-get install -y wash
+          if ! command -v wash &> /dev/null; then
+            sudo curl -fsSL https://github.com/wasmCloud/wash/releases/latest/download/wash-x86_64-unknown-linux-musl -o /usr/local/bin/wash && sudo chmod +x /usr/local/bin/wash || {
+              echo "Fallback: installing via packagecloud..."
+              curl -s https://packagecloud.io/install/repositories/wasmcloud/core/script.deb.sh | sudo bash || true
+              sudo apt-get install -y wash || true
+            }
+          fi
+          wash --version
 
       - name: Interpolate WADM Application Manifest
         env:
