@@ -132,15 +132,20 @@ on:
         type: string
         default: "wasmcloud-wadm-deployer"
       ecs-subnets:
-        description: "Comma-separated private VPC subnets for ephemeral ECS task"
+        description: "Comma-separated VPC subnets for ephemeral ECS task"
         required: false
         type: string
-        default: "subnet-0d451def791048e52,subnet-0a015b66206661bf7"
+        default: "subnet-0889866a27a35d737,subnet-0f2152a18bd3051c3"
       ecs-security-groups:
         description: "Comma-separated security groups for ephemeral ECS task"
         required: false
         type: string
         default: "sg-07b7ae6447421b2b7"
+      ecs-assign-public-ip:
+        description: "Assign public IP to ephemeral ECS task (ENABLED or DISABLED)"
+        required: false
+        type: string
+        default: "ENABLED"
       nats-host:
         description: "Private NATS control plane hostname within the VPC"
         required: false
@@ -484,6 +489,7 @@ jobs:
           TASK_DEF: ${{ inputs.ecs-task-definition }}
           SUBNETS: ${{ inputs.ecs-subnets }}
           SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
+          ASSIGN_PUBLIC_IP: ${{ inputs.ecs-assign-public-ip }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_NATS_HOST: ${{ inputs.nats-host }}
@@ -509,6 +515,7 @@ jobs:
           echo "Task Definition: ${TASK_DEF}"
           echo "Subnets:         ${SUBNETS}"
           echo "Security Groups: ${SECURITY_GROUPS}"
+          echo "Public IP:       ${ASSIGN_PUBLIC_IP}"
 
           # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
           MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
@@ -532,7 +539,7 @@ jobs:
           OVERRIDES_FILE=$(mktemp)
           python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
 
-          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); pip = sys.argv[3].strip(); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp={pip}}}")' "${SUBNETS}" "${SECURITY_GROUPS}" "${ASSIGN_PUBLIC_IP}")
 
           echo "Launching ephemeral ECS Fargate deployment task..."
           TASK_ARN=$(aws ecs run-task \
@@ -696,6 +703,7 @@ jobs:
           TASK_DEF: ${{ inputs.ecs-task-definition }}
           SUBNETS: ${{ inputs.ecs-subnets }}
           SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
+          ASSIGN_PUBLIC_IP: ${{ inputs.ecs-assign-public-ip }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_NATS_HOST: ${{ inputs.nats-host }}
@@ -721,6 +729,7 @@ jobs:
           echo "Task Definition: ${TASK_DEF}"
           echo "Subnets:         ${SUBNETS}"
           echo "Security Groups: ${SECURITY_GROUPS}"
+          echo "Public IP:       ${ASSIGN_PUBLIC_IP}"
 
           # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
           MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
@@ -744,7 +753,7 @@ jobs:
           OVERRIDES_FILE=$(mktemp)
           python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
 
-          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); pip = sys.argv[3].strip(); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp={pip}}}")' "${SUBNETS}" "${SECURITY_GROUPS}" "${ASSIGN_PUBLIC_IP}")
 
           echo "Launching ephemeral ECS Fargate deployment task..."
           TASK_ARN=$(aws ecs run-task \
@@ -909,6 +918,7 @@ jobs:
           TASK_DEF: ${{ inputs.ecs-task-definition }}
           SUBNETS: ${{ inputs.ecs-subnets }}
           SECURITY_GROUPS: ${{ inputs.ecs-security-groups }}
+          ASSIGN_PUBLIC_IP: ${{ inputs.ecs-assign-public-ip }}
           INPUT_CTL_HOST: ${{ secrets.WASMCLOUD_CTL_HOST }}
           INPUT_CTL_PORT: ${{ secrets.WASMCLOUD_CTL_PORT }}
           INPUT_NATS_HOST: ${{ inputs.nats-host }}
@@ -934,6 +944,7 @@ jobs:
           echo "Task Definition: ${TASK_DEF}"
           echo "Subnets:         ${SUBNETS}"
           echo "Security Groups: ${SECURITY_GROUPS}"
+          echo "Public IP:       ${ASSIGN_PUBLIC_IP}"
 
           # Compress manifest to base64 to ensure it stays well within ECS overrides character limit
           MANIFEST_GZ_B64=$(gzip -c "${MANIFEST}" | base64 -w 0)
@@ -957,7 +968,7 @@ jobs:
           OVERRIDES_FILE=$(mktemp)
           python3 -c 'import json, sys; overrides = {"containerOverrides": [{"name": sys.argv[1], "environment": [{"name": "MANIFEST_GZ_B64", "value": sys.argv[2]}], "command": ["sh", "-c", sys.argv[3]]}]}; json.dump(overrides, open(sys.argv[4], "w"))' "${CONTAINER_NAME}" "${MANIFEST_GZ_B64}" "${CONTAINER_SCRIPT}" "${OVERRIDES_FILE}"
 
-          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp=DISABLED}}")' "${SUBNETS}" "${SECURITY_GROUPS}")
+          NET_CONFIG=$(python3 -c 'import json, sys; subnets = json.dumps([s.strip() for s in sys.argv[1].split(",") if s.strip()]); sgs = json.dumps([s.strip() for s in sys.argv[2].split(",") if s.strip()]); pip = sys.argv[3].strip(); print(f"awsvpcConfiguration={{subnets={subnets},securityGroups={sgs},assignPublicIp={pip}}}")' "${SUBNETS}" "${SECURITY_GROUPS}" "${ASSIGN_PUBLIC_IP}")
 
           echo "Launching ephemeral ECS Fargate deployment task..."
           TASK_ARN=$(aws ecs run-task \
