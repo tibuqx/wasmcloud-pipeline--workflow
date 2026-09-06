@@ -414,6 +414,8 @@ jobs:
           REGISTRY: ${{ inputs.oci-registry }}
           PREFIX: ${{ inputs.oci-repository-prefix }}
           TARGET: ${{ inputs.wasm-target }}
+          MANIFEST: ${{ inputs.wadm-manifest-path }}
+          AWS_REGION: ${{ inputs.aws-region }}
           ECR_PASS: ${{ steps.ecr-auth.outputs.password }}
           INPUT_USER: ${{ secrets.OCI_REGISTRY_USER }}
           INPUT_PASS: ${{ secrets.OCI_REGISTRY_PASSWORD }}
@@ -425,28 +427,54 @@ jobs:
             OCI_USER="${INPUT_USER:-${GITHUB_ACTOR}}"
             OCI_PASSWORD="${INPUT_PASS:-${GITHUB_TOKEN}}"
           fi
+
+          FILTER_NAMES=""
+          if [ -n "${MANIFEST}" ] && [ -f "${MANIFEST}" ]; then
+            echo "Filtering push components to those referenced in ${MANIFEST}..."
+            FILTER_NAMES=$(grep -oE '\{\{REGISTRY\}\}/[a-zA-Z0-9_-]+' "${MANIFEST}" | sed 's|{{REGISTRY}}/||' | sort -u || true)
+            echo "Manifest components: ${FILTER_NAMES}"
+          fi
+
           echo "Pushing WASM components to ${REGISTRY} with tag ${TAG}..."
-          FOUND=0
+          PUSHED=0
           for wasm in target/"${TARGET}"/release/*.wasm; do
             [ -f "$wasm" ] || continue
-            FOUND=1
-            name=$(basename "$wasm" .wasm | tr '_' '-')
+            raw_name=$(basename "$wasm" .wasm | tr '_' '-')
+
+            if [ -n "${FILTER_NAMES}" ]; then
+              if ! echo "${FILTER_NAMES}" | grep -qw "${raw_name}"; then
+                echo "Skipping ${raw_name} (not declared in manifest ${MANIFEST})"
+                continue
+              fi
+            fi
+
+            if [ -n "${ECR_PASS}" ]; then
+              if ! aws ecr describe-repositories --repository-names "${raw_name}" --region "${AWS_REGION}" >/dev/null 2>&1; then
+                echo "Warning: AWS ECR repository '${raw_name}' does not exist in ${AWS_REGION}. Skipping."
+                continue
+              fi
+            fi
+
+            name="${raw_name}"
             if [ -n "${PREFIX}" ]; then
               DEST="${REGISTRY}/${PREFIX}/${name}:${TAG}"
             else
               DEST="${REGISTRY}/${name}:${TAG}"
             fi
+
             echo "Publishing ${wasm} -> ${DEST}"
             wash push "${DEST}" "${wasm}" \
               --user "${OCI_USER}" \
               --password "${OCI_PASSWORD}" \
               --allow-latest
+            PUSHED=$((PUSHED + 1))
           done
 
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: No .wasm binaries found in target/${TARGET}/release/ to push."
+          if [ "$PUSHED" -eq 0 ]; then
+            echo "ERROR: No .wasm binaries were pushed to ${REGISTRY}."
             exit 1
           fi
+          echo "Successfully pushed ${PUSHED} WASM components to ${REGISTRY}."
 
   # =========================================================================
   # 3. Deploy to Integration Environment (PR Preview)
