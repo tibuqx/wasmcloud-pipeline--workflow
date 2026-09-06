@@ -395,12 +395,18 @@ jobs:
           echo "::add-mask::${ECR_PASS}"
           echo "password=${ECR_PASS}" >> "${GITHUB_OUTPUT}"
 
+      - name: Log in to AWS ECR
+        if: steps.ecr-auth.outputs.password != ''
+        run: |
+          echo "${{ steps.ecr-auth.outputs.password }}" | docker login --username AWS --password-stdin "${{ inputs.oci-registry }}"
+
       - name: Log in to OCI Registry
+        if: steps.ecr-auth.outputs.password == ''
         uses: docker/login-action@v3
         with:
           registry: ${{ inputs.oci-registry }}
-          username: ${{ steps.ecr-auth.outputs.password != '' && 'AWS' || secrets.OCI_REGISTRY_USER || github.actor }}
-          password: ${{ steps.ecr-auth.outputs.password || secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.OCI_REGISTRY_USER || github.actor }}
+          password: ${{ secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
 
       - name: Package & Push Components via wash push
         env:
@@ -408,9 +414,17 @@ jobs:
           REGISTRY: ${{ inputs.oci-registry }}
           PREFIX: ${{ inputs.oci-repository-prefix }}
           TARGET: ${{ inputs.wasm-target }}
-          OCI_USER: ${{ steps.ecr-auth.outputs.password != '' && 'AWS' || secrets.OCI_REGISTRY_USER || github.actor }}
-          OCI_PASSWORD: ${{ steps.ecr-auth.outputs.password || secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          ECR_PASS: ${{ steps.ecr-auth.outputs.password }}
+          INPUT_USER: ${{ secrets.OCI_REGISTRY_USER }}
+          INPUT_PASS: ${{ secrets.OCI_REGISTRY_PASSWORD }}
         run: |
+          if [ -n "${ECR_PASS}" ]; then
+            OCI_USER="AWS"
+            OCI_PASSWORD="${ECR_PASS}"
+          else
+            OCI_USER="${INPUT_USER:-${GITHUB_ACTOR}}"
+            OCI_PASSWORD="${INPUT_PASS:-${GITHUB_TOKEN}}"
+          fi
           echo "Pushing WASM components to ${REGISTRY} with tag ${TAG}..."
           FOUND=0
           for wasm in target/"${TARGET}"/release/*.wasm; do
