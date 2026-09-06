@@ -324,6 +324,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
     steps:
@@ -377,29 +378,50 @@ jobs:
           fi
           wash --version
 
+      - name: Configure AWS Credentials for ECR (OIDC)
+        if: inputs.aws-role-arn != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws-role-arn }}
+          aws-region: ${{ inputs.aws-region }}
+          audience: sts.amazonaws.com
+
+      - name: Obtain ECR Credentials
+        id: ecr-auth
+        if: inputs.aws-role-arn != '' && contains(inputs.oci-registry, 'amazonaws.com')
+        run: |
+          echo "Obtaining AWS ECR login password..."
+          ECR_PASS=$(aws ecr get-login-password --region "${{ inputs.aws-region }}")
+          echo "::add-mask::${ECR_PASS}"
+          echo "password=${ECR_PASS}" >> "${GITHUB_OUTPUT}"
+
       - name: Log in to OCI Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ inputs.oci-registry }}
-          username: ${{ secrets.OCI_REGISTRY_USER || github.actor }}
-          password: ${{ secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          username: ${{ steps.ecr-auth.outputs.password != '' && 'AWS' || secrets.OCI_REGISTRY_USER || github.actor }}
+          password: ${{ steps.ecr-auth.outputs.password || secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
 
       - name: Package & Push Components via wash push
         env:
           TAG: ${{ steps.meta.outputs.tag }}
           REGISTRY: ${{ inputs.oci-registry }}
-          PREFIX: ${{ inputs.oci-repository-prefix || github.repository }}
+          PREFIX: ${{ inputs.oci-repository-prefix }}
           TARGET: ${{ inputs.wasm-target }}
-          OCI_USER: ${{ secrets.OCI_REGISTRY_USER || github.actor }}
-          OCI_PASSWORD: ${{ secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          OCI_USER: ${{ steps.ecr-auth.outputs.password != '' && 'AWS' || secrets.OCI_REGISTRY_USER || github.actor }}
+          OCI_PASSWORD: ${{ steps.ecr-auth.outputs.password || secrets.OCI_REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
         run: |
-          echo "Pushing WASM components to ${REGISTRY}/${PREFIX} with tag ${TAG}..."
+          echo "Pushing WASM components to ${REGISTRY} with tag ${TAG}..."
           FOUND=0
           for wasm in target/"${TARGET}"/release/*.wasm; do
             [ -f "$wasm" ] || continue
             FOUND=1
             name=$(basename "$wasm" .wasm | tr '_' '-')
-            DEST="${REGISTRY}/${PREFIX}/${name}:${TAG}"
+            if [ -n "${PREFIX}" ]; then
+              DEST="${REGISTRY}/${PREFIX}/${name}:${TAG}"
+            else
+              DEST="${REGISTRY}/${name}:${TAG}"
+            fi
             echo "Publishing ${wasm} -> ${DEST}"
             wash push "${DEST}" "${wasm}" \
               --user "${OCI_USER}" \
@@ -464,12 +486,16 @@ jobs:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           TAG: ${{ needs.package.outputs.image-tag }}
           REGISTRY: ${{ inputs.oci-registry }}
-          PREFIX: ${{ inputs.oci-repository-prefix || github.repository }}
+          PREFIX: ${{ inputs.oci-repository-prefix }}
         run: |
           echo "Interpolating WADM manifest ${MANIFEST} with tag ${TAG}..."
           if [ -f "${MANIFEST}" ]; then
             sed -i "s|{{IMAGE_TAG}}|${TAG}|g" "${MANIFEST}"
-            sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            if [ -n "${PREFIX}" ]; then
+              sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            else
+              sed -i "s|{{REGISTRY}}|${REGISTRY}|g" "${MANIFEST}"
+            fi
           else
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
@@ -480,6 +506,16 @@ jobs:
             echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
             wash app validate "${{ inputs.wadm-manifest-path }}"
           fi
+
+      - name: Sync Fresh ECR Token to Secrets Manager (Zero GHCR Policy, ADR-0042, ADR-0045)
+        if: contains(inputs.oci-registry, 'amazonaws.com')
+        run: |
+          echo "Syncing fresh ECR authorization token for wasmcloud-host..."
+          ECR_PASS=$(aws ecr get-login-password --region "${{ inputs.aws-region }}")
+          aws secretsmanager put-secret-value \
+            --secret-id "wasmcloud/ecr/token" \
+            --secret-string "${ECR_PASS}" \
+            --region "${{ inputs.aws-region }}"
 
       - name: Deploy to Integration wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
@@ -678,12 +714,16 @@ jobs:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           TAG: ${{ needs.package.outputs.image-tag }}
           REGISTRY: ${{ inputs.oci-registry }}
-          PREFIX: ${{ inputs.oci-repository-prefix || github.repository }}
+          PREFIX: ${{ inputs.oci-repository-prefix }}
         run: |
           echo "Interpolating staging WADM manifest ${MANIFEST} with tag ${TAG}..."
           if [ -f "${MANIFEST}" ]; then
             sed -i "s|{{IMAGE_TAG}}|${TAG}|g" "${MANIFEST}"
-            sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            if [ -n "${PREFIX}" ]; then
+              sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            else
+              sed -i "s|{{REGISTRY}}|${REGISTRY}|g" "${MANIFEST}"
+            fi
           else
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
@@ -694,6 +734,16 @@ jobs:
             echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
             wash app validate "${{ inputs.wadm-manifest-path }}"
           fi
+
+      - name: Sync Fresh ECR Token to Secrets Manager (Zero GHCR Policy, ADR-0042, ADR-0045)
+        if: contains(inputs.oci-registry, 'amazonaws.com')
+        run: |
+          echo "Syncing fresh ECR authorization token for wasmcloud-host..."
+          ECR_PASS=$(aws ecr get-login-password --region "${{ inputs.aws-region }}")
+          aws secretsmanager put-secret-value \
+            --secret-id "wasmcloud/ecr/token" \
+            --secret-string "${ECR_PASS}" \
+            --region "${{ inputs.aws-region }}"
 
       - name: Deploy to Staging wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
@@ -893,12 +943,16 @@ jobs:
           MANIFEST: ${{ inputs.wadm-manifest-path }}
           TAG: sha-${{ github.sha }}
           REGISTRY: ${{ inputs.oci-registry }}
-          PREFIX: ${{ inputs.oci-repository-prefix || github.repository }}
+          PREFIX: ${{ inputs.oci-repository-prefix }}
         run: |
           echo "Interpolating production WADM manifest ${MANIFEST} with tag ${TAG}..."
           if [ -f "${MANIFEST}" ]; then
             sed -i "s|{{IMAGE_TAG}}|${TAG}|g" "${MANIFEST}"
-            sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            if [ -n "${PREFIX}" ]; then
+              sed -i "s|{{REGISTRY}}|${REGISTRY}/${PREFIX}|g" "${MANIFEST}"
+            else
+              sed -i "s|{{REGISTRY}}|${REGISTRY}|g" "${MANIFEST}"
+            fi
           else
             echo "WADM manifest ${MANIFEST} not found, skipping templating."
           fi
@@ -909,6 +963,16 @@ jobs:
             echo "Validating WADM application manifest ${{ inputs.wadm-manifest-path }}..."
             wash app validate "${{ inputs.wadm-manifest-path }}"
           fi
+
+      - name: Sync Fresh ECR Token to Secrets Manager (Zero GHCR Policy, ADR-0042, ADR-0045)
+        if: contains(inputs.oci-registry, 'amazonaws.com')
+        run: |
+          echo "Syncing fresh ECR authorization token for wasmcloud-host..."
+          ECR_PASS=$(aws ecr get-login-password --region "${{ inputs.aws-region }}")
+          aws secretsmanager put-secret-value \
+            --secret-id "wasmcloud/ecr/token" \
+            --secret-string "${ECR_PASS}" \
+            --region "${{ inputs.aws-region }}"
 
       - name: Deploy to Production wasmCloud Lattice (Remote in-VPC ECS Task)
         env:
